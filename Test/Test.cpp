@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <atomic>
 #include <regex>
 #include <thread>
 
@@ -33,6 +34,12 @@ struct TestIO
 	TestIO() : m_io({ m_in, std::cerr, m_out })
 	{}
 
+	TestIO(TestIO&& other) noexcept
+		: m_in(std::move(other.m_in))
+		, m_out(std::move(other.m_out))
+		, m_io({ m_in, std::cerr, m_out })
+	{}
+
 	std::istringstream m_in;
 	std::ostringstream m_out;
 	IO m_io;
@@ -43,11 +50,13 @@ struct SearchRaceTest : public ::testing::Test
 	SearchRaceTest()
 	{
 		m_config.m_simulation = true;
-		//m_config.m_runLevel = RunLevel::Test;
+		m_config.m_runLevel = RunLevel::Test;
 		m_config.m_runLevel = RunLevel::Validation;
+		//m_config.m_withRandomTests = false;
 
-		m_maxThreadsCount = 3u;
-		m_runsCount = 3u;
+		m_maxThreadsCount = 4u;
+		m_runsCount = 1u;
+
 		if (m_config.m_runLevel < RunLevel::Validation)
 		{
 			m_maxThreadsCount = 1u;
@@ -66,45 +75,79 @@ struct SearchRaceTest : public ::testing::Test
 
 	static void simulateGame(SearchRaceTest* test, TestIO* io, GameInput const& input, Result* result)
 	{
-		for (unsigned run = 0u; run <= test->m_runsCount; ++run)
+		for (unsigned run = 0u; run < test->m_runsCount; ++run)
 			*result = *result + test->runGame(*io, input);
 	}
 
-	void runGames(std::vector<GameInput> const& inputs)
+	struct RunInput
 	{
-		TestIO io;
-		Result result;
+		RunInput(SearchRaceTest& test, GameInput const& input) : m_test(test), m_input(input), m_done(false) {}
 
-		std::vector<std::thread> threads(inputs.size());
-		std::vector<TestIO> ios(inputs.size());
-		std::vector<Result> results(inputs.size());
+		RunInput(RunInput&&) = default;
+		RunInput& operator=(RunInput&&) = default;
 
-		for (unsigned batch = 0; batch < inputs.size(); batch += m_maxThreadsCount)
+		SearchRaceTest& m_test;
+		TestIO m_io;
+		GameInput const& m_input;
+		Result m_result;
+		bool m_done;
+	};
+
+	static void simulateGames(std::vector<RunInput>* runInputs, std::atomic<unsigned>* atomicIndex)
+	{
+		auto next = [&]() { return atomicIndex->fetch_add(1); };
+		auto index = next();
+		while (index < runInputs->size())
 		{
-			unsigned limit = std::min(batch + m_maxThreadsCount, static_cast<unsigned>(inputs.size()));
+			auto& runInput = (*runInputs)[index];
+			simulateGame(&runInput.m_test, &runInput.m_io, runInput.m_input, &runInput.m_result);
+			runInput.m_done = true;
+			index = next();
+		}
+	}
 
-			for (unsigned test = batch; test < limit; ++test)
-			{
-				if (m_maxThreadsCount > 1)
-					threads[test] = std::thread(simulateGame, this, &ios[test], inputs[test], &results[test]);
-				else
-					simulateGame(this, &ios[test], inputs[test], &results[test]);
-			}
-			for (unsigned test = batch; test < limit; ++test)
-			{
-				if (threads[test].joinable())
-					threads[test].join();
-				ios[test].m_io.m_err << "Test(" << inputs[test].m_label << "): " << results[test] << std::endl;
-				EXPECT_LE((results[test].m_elpased / results[test].m_iterationsCount), turnTime.count());
-				EXPECT_LT((results[test].m_iterationsCount / results[test].m_gamesCount), iterationLimit);
-				result = result + results[test];
-			}
+	static void displayResults(std::vector<RunInput>* runInputs, bool intermediaryResults)
+	{
+		Result result;
+		for (auto const& runInput : *runInputs)
+		{
+			while (!runInput.m_done)
+				std::this_thread::yield();
+			if (intermediaryResults)
+				runInput.m_io.m_io.m_err << "Test(" << runInput.m_input.m_label << "): " << runInput.m_result << std::endl;
+			EXPECT_LE((runInput.m_result.m_elpased / runInput.m_result.m_iterationsCount), turnTime.count());
+			EXPECT_LT((runInput.m_result.m_iterationsCount / runInput.m_result.m_gamesCount), iterationLimit);
+			result = result + runInput.m_result;
 		}
 
+		TestIO io;
 		io.m_io.m_err << "------ " << std::endl;
 		io.m_io.m_err << "Tests: " << result << std::endl;
 		EXPECT_LE((result.m_elpased / result.m_iterationsCount), turnTime.count());
 		EXPECT_LT((result.m_iterationsCount / result.m_gamesCount), iterationLimit);
+	}
+
+	void runGames(std::vector<GameInput> const& inputs, bool intermediaryResults = true)
+	{
+		std::vector<RunInput> runInputs;
+		for (auto const& input : inputs)
+			runInputs.emplace_back(*this, input);
+
+		std::atomic<unsigned> atomicIndex = 0u;
+		std::vector<std::thread> threads(m_maxThreadsCount <= 1 ? 0 : m_maxThreadsCount);
+		if (threads.empty())
+			simulateGames(&runInputs, &atomicIndex);
+		else
+			for (auto& thread : threads)
+				thread = std::thread(simulateGames, &runInputs, &atomicIndex);
+
+		if (threads.empty())
+			displayResults(&runInputs, intermediaryResults);
+		else
+			threads.push_back(std::thread(displayResults, &runInputs, intermediaryResults));
+		for (auto& thread : threads)
+			if (thread.joinable())
+				thread.join();
 	}
 
 	void testParameters(std::vector<GameInput> const& inputs)
@@ -116,40 +159,11 @@ struct SearchRaceTest : public ::testing::Test
 			{
 				//for (m_config.m_targetStep = 2u; m_config.m_targetStep <= 4u; m_config.m_targetStep += 1)
 				{
-					io.m_io.m_err << "testSequenceIterationsMax=" << m_config.m_testSequenceIterationsMax << " testSequencesSizeMax=" << m_config.m_testSequencesSizeMax << " targetStep=" << m_config.m_targetStep << std::endl;
-
-					Result result;
-
-					std::vector<std::thread> threads(inputs.size());
-					std::vector<TestIO> ios(inputs.size());
-					std::vector<Result> results(inputs.size());
-
-					for (unsigned batch = 0; batch < inputs.size(); batch += m_maxThreadsCount)
+					for (m_config.m_speedFactor = 1.; m_config.m_speedFactor <= 6.; m_config.m_speedFactor += .1)
 					{
-						unsigned limit = std::min(batch + m_maxThreadsCount, static_cast<unsigned>(inputs.size()));
-
-						for (unsigned test = batch; test < limit; ++test)
-						{
-							if (m_maxThreadsCount > 1)
-								threads[test] = std::thread(simulateGame, this, &ios[test], inputs[test], &results[test]);
-							else
-								simulateGame(this, &ios[test], inputs[test], &results[test]);
-						}
-						for (unsigned test = batch; test < limit; ++test)
-						{
-							if (threads[test].joinable())
-								threads[test].join();
-							//ios[test].m_io.m_err << "Test(" << inputs[test].m_label << "): " << results[test] << std::endl;
-							EXPECT_LE((results[test].m_elpased / results[test].m_iterationsCount), turnTime.count());
-							EXPECT_LT((results[test].m_iterationsCount / results[test].m_gamesCount), iterationLimit);
-							result = result + results[test];
-						}
+						io.m_io.m_err << "testSequenceIterationsMax=" << m_config.m_testSequenceIterationsMax << " testSequencesSizeMax=" << m_config.m_testSequencesSizeMax << " targetStep=" << m_config.m_targetStep << " speedFactor=" << std::setprecision(2) << m_config.m_speedFactor << std::endl;
+						runGames(inputs, false);
 					}
-
-					//io.m_io.m_err << "------ " << std::endl;
-					io.m_io.m_err << "Tests: " << result << std::endl;
-					EXPECT_LE((result.m_elpased / result.m_iterationsCount), turnTime.count());
-					EXPECT_LT((result.m_iterationsCount / result.m_gamesCount), iterationLimit);
 				}
 			}
 		}

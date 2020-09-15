@@ -14,6 +14,7 @@ struct Config
 	unsigned m_testSequencesSizeMax = 3;
 	unsigned m_testSequenceIterationsMax = 5;
 	unsigned m_targetStep = 2;
+	double m_speedFactor = 3.;
 };
 
 #include <algorithm>
@@ -353,7 +354,7 @@ struct Command
 
 	State move(Game const& game, State state) const
 	{
-		auto checkpoint = game.m_checkpoints.m_checkpoints[state.m_step];
+		auto const& checkpoint = game.m_checkpoints.m_checkpoints[state.m_step];
 
 		state.m_angle = get360Angle(state.m_angle + m_angle);
 		state.m_speed += static_cast<Z::value_type>(m_thrust) * getPolar(state.m_angle);
@@ -380,18 +381,7 @@ static std::ostream& operator<<(std::ostream& os, Command const& c)
 
 static Command getDirectCommand(Game const& game, IO& io, State const& state)
 {
-	auto nexTarget = game.m_checkpoints.m_checkpoints[state.m_step] - state.m_position - 2. * state.m_speed;
-	auto angleSpeed = std::arg(state.m_speed) * degByRad;
-	auto angleToTarget = std::arg(nexTarget) * degByRad;
-	auto commandAngle = get180Angle(static_cast<Angle>(std::round(angleToTarget - state.m_angle)));
-	if (isValidAngle(commandAngle))
-		return Command(commandAngle, thrustMax);
-	return Command(getValidAngle(commandAngle), 0);
-}
-
-static Command getDirectCommand2(Game const& game, IO& io, State const& state)
-{
-	auto nexTarget = game.m_checkpoints.m_checkpoints[state.m_step] - state.m_position - state.m_speed;
+	auto nexTarget = game.m_checkpoints.m_checkpoints[state.m_step] - state.m_position - game.m_config.m_speedFactor * state.m_speed;
 	auto angleSpeed = std::arg(state.m_speed) * degByRad;
 	auto angleToTarget = std::arg(nexTarget) * degByRad;
 	auto commandAngle = get180Angle(static_cast<Angle>(std::round(angleToTarget - state.m_angle)));
@@ -484,7 +474,7 @@ static TestSequences getRandomTestSequences(Game const& game)
 static TestSequences mutateTestSequences(Game const& game, TestSequences testSequences)
 {
 	if (getRandomBool())
-		for (int index = 0; index < testSequences.size(); ++index)
+		for (int index = 0; index < static_cast<int>(testSequences.size()); ++index)
 		{
 			testSequences[index].m_iterations += getRandom<int, -1, +1>();
 			if (!testSequences[index].m_iterations)
