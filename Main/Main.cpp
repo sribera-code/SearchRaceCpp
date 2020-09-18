@@ -4,17 +4,25 @@ enum class RunLevel { Debug = 0, Test = 1, PreValidation = 2, Validation = 3, Re
 
 struct Config
 {
-	bool m_withRandomTests = true;
-	//bool m_withRandomTests = false;
 	bool m_simulation = false;
 	std::chrono::milliseconds m_turnTime = std::chrono::milliseconds(40);
-	//RunLevel m_runLevel = RunLevel::Debug;
+	std::chrono::milliseconds m_firstTurnTime = std::chrono::milliseconds(950);
 	RunLevel m_runLevel = RunLevel::Release;
 
+	bool m_withRandomTests = true;
 	unsigned m_testSequencesSizeMax = 3;
 	unsigned m_testSequenceIterationsMax = 5;
 	unsigned m_targetStep = 2;
+	double m_targetDistance = 1800.;
 	double m_speedFactor = 3.;
+	bool m_useDisksOfRotation = true;
+
+	Config()
+	{
+		//m_withRandomTests = false;
+		//m_runLevel = RunLevel::Debug;
+		//m_speedFactor = 3.;
+	}
 };
 
 #include <algorithm>
@@ -57,10 +65,13 @@ const double radByDeg = pi / 180.;
 const double degByRad = 180. / pi;
 const Distance epsilon = .00001;
 const Angle angleMax = 18;
+const double halfInverseTanHalfAngleMax = .5 / std::tan(.5 * angleMax * radByDeg);
+const double halfInverseSinHalfAngleMax = .5 / std::sin(.5 * angleMax * radByDeg);
+
 const Thrust thrustMax = 200;
 const Distance xMax = 16000, yMax = 9000, checkpointRadius = 600;
 const double checkpointRadiusSquare = checkpointRadius * checkpointRadius;
-const double friction = 0.15;
+const double friction = .15;
 const Iteration iterationLimit = 600;
 const std::chrono::milliseconds firstTurnTime(1000);
 const std::chrono::milliseconds turnTime(50);
@@ -224,6 +235,8 @@ static Z truncateZ(Z z)
 	return { std::trunc(z.real() + copysign(epsilon, z.real())), std::trunc(z.imag() + copysign(epsilon, z.imag())) };
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 struct Checkpoints
 {
 	std::vector<Z> m_checkpoints;
@@ -236,17 +249,24 @@ struct Checkpoints
 
 		std::generate_n(std::back_inserter(checkpoints.m_checkpoints), io.read<Step>(true), [&io]() { return io.read<Z>(true); });
 
-		checkpoints.m_distances.resize(checkpoints.m_checkpoints.size() - 1, 0.);
-		for (Index index = 0; index < checkpoints.m_distances.size(); ++index)
-			checkpoints.m_distances[index] = std::abs(checkpoints.m_checkpoints[index + 1] - checkpoints.m_checkpoints[index]);
+		checkpoints.m_distances.resize(checkpoints.m_checkpoints.size(), 0.);
+		checkpoints.m_distances[0] = std::abs(checkpoints.m_checkpoints[0] - checkpoints.m_checkpoints[checkpoints.m_checkpoints.size() - 1]);
+		for (Index index = 1; index < checkpoints.m_checkpoints.size(); ++index)
+			checkpoints.m_distances[index] = std::abs(checkpoints.m_checkpoints[index] - checkpoints.m_checkpoints[index - 1]);
 		
 		checkpoints.m_targetSteps.resize(checkpoints.m_checkpoints.size(), 0u);
 		for (Step step = 0; step < checkpoints.m_targetSteps.size(); ++step)
 		{
-			auto targetStep = step + config.m_targetStep;
-			if (targetStep - 1 < checkpoints.m_distances.size() && checkpoints.m_distances[targetStep - 1] < 4000)
+			auto targetStep = step + 2;
+			Distance distance = config.m_targetDistance;
+			while (targetStep < checkpoints.m_distances.size())
+			{
+				distance -= checkpoints.m_distances[targetStep];
+				if (distance <= 0.)
+					break;
 				++targetStep;
-			checkpoints.m_targetSteps[step] = std::min(targetStep, checkpoints.m_checkpoints.size());
+			}
+			checkpoints.m_targetSteps[step] = std::min(std::max(targetStep, step + config.m_targetStep), checkpoints.m_checkpoints.size());
 		}
 
 		return checkpoints;
@@ -273,6 +293,23 @@ static std::ostream& operator<<(std::ostream& os, Checkpoints const& g)
 	return join(os, g.m_checkpoints, ", ") << "]";
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+static double getCollisionTime(Z const& position, Z const& speed, Z const& checkpoint)
+{
+	auto x = position.real() - checkpoint.real();
+	auto y = position.imag() - checkpoint.imag();
+	auto vx = speed.real();
+	auto vy = speed.imag();
+
+	auto a = vx * vx + vy * vy;
+	auto b = 2. * (x * vx + y * vy);
+	auto c = x * x + y * y - checkpointRadiusSquare;
+	auto delta = b * b - 4. * a * c;
+
+	return delta < 0. ? -1 : (-b - sqrt(delta)) / (2. * a);
+}
+
 struct State
 {
 	State() = default;
@@ -289,6 +326,25 @@ struct State
 	static State read(IO& io)
 	{
 		return { io.read<Step>(), io.read<Z>(), io.read<Z>(), io.read<Angle>(true) };
+	}
+
+	double getCollisionTime(Game const& game) const
+	{
+		auto const& checkpoint = game.m_checkpoints.m_checkpoints[m_step];
+		return ::getCollisionTime(m_position, m_speed, checkpoint);
+	}
+
+	bool isOutDisksOfRotation(Game const& game, IO& io, Z const& point, Distance pointRadius) const
+	{
+		Z halfNext = m_position + .5 * m_speed;
+		Z diskRadius = 1.i * m_speed * halfInverseTanHalfAngleMax;
+		Z diskCenter1 = halfNext + diskRadius;
+		Z diskCenter2 = halfNext - diskRadius;
+		auto distance1 = std::abs(point - diskCenter1);
+		auto distance2 = std::abs(point - diskCenter2);
+		auto disksRadius = std::abs(m_speed) * halfInverseSinHalfAngleMax;
+		//logAtLevel(game, RunLevel::Debug, io) << "isOutDisksOfRotation" << " distance1=" << distance1 << " distance2=" << distance2 << " disksRadius=" << disksRadius << " speed=" << std::abs(m_speed) << std::endl;
+		return distance1 > disksRadius && distance2 > disksRadius;
 	}
 };
 
@@ -319,6 +375,8 @@ static std::ostream& operator<<(std::ostream& os, State const& state)
 		<< " speed=" << state.m_speed << "[" << std::abs(state.m_speed) << "," << std::arg(state.m_speed) * degByRad << "deg] angle=" << state.m_angle << "deg";
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 struct Command
 {
 	Command() = default;
@@ -337,28 +395,11 @@ struct Command
 		return { getRandomAngle(), getRandomThrust() };
 	}
 
-	static double getCollisionTime(Z const& position, Z const& speed, Z const& checkpoint)
-	{
-		auto x = position.real() - checkpoint.real();
-		auto y = position.imag() - checkpoint.imag();
-		auto vx = speed.real();
-		auto vy = speed.imag();
-
-		auto a = vx * vx + vy * vy;
-		auto b = 2. * (x * vx + y * vy);
-		auto c = x * x + y * y - checkpointRadiusSquare;
-		auto delta = b * b - 4. * a * c;
-
-		return delta < 0. ? -1 : (-b - sqrt(delta)) / (2. * a);
-	}
-
 	State move(Game const& game, State state) const
 	{
-		auto const& checkpoint = game.m_checkpoints.m_checkpoints[state.m_step];
-
 		state.m_angle = get360Angle(state.m_angle + m_angle);
 		state.m_speed += static_cast<Z::value_type>(m_thrust) * getPolar(state.m_angle);
-		state.m_collisionTime = getCollisionTime(state.m_position, state.m_speed, checkpoint);
+		state.m_collisionTime = state.getCollisionTime(game);
 		state.m_position += state.m_speed;
 		state.m_speed *= 1. - friction;
 		++state.m_iteration;
@@ -381,14 +422,19 @@ static std::ostream& operator<<(std::ostream& os, Command const& c)
 
 static Command getDirectCommand(Game const& game, IO& io, State const& state)
 {
-	auto nexTarget = game.m_checkpoints.m_checkpoints[state.m_step] - state.m_position - game.m_config.m_speedFactor * state.m_speed;
-	auto angleSpeed = std::arg(state.m_speed) * degByRad;
+	//logAtLevel(game, RunLevel::Debug, io) << "getDirectCommand" << " state:" << state << std::endl;
+	auto const& checkpoint = game.m_checkpoints.m_checkpoints[state.m_step];
+	auto nexTarget = checkpoint - state.m_position - game.m_config.m_speedFactor * state.m_speed;
 	auto angleToTarget = std::arg(nexTarget) * degByRad;
 	auto commandAngle = get180Angle(static_cast<Angle>(std::round(angleToTarget - state.m_angle)));
 	if (isValidAngle(commandAngle))
 		return Command(commandAngle, thrustMax);
+	if (game.m_config.m_useDisksOfRotation && state.isOutDisksOfRotation(game, io, checkpoint, checkpointRadius))
+		return Command(getValidAngle(commandAngle), thrustMax);
 	return Command(getValidAngle(commandAngle), 0);
 }
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct TestSequence
 {
@@ -443,7 +489,7 @@ static std::ostream& operator<<(std::ostream& os, TestSequences const& testSeque
 static TestSequence getRandomTestSequence(Game const& game, bool last)
 {
 	TestSequence testSequence;
-	auto type = last ? getRandomExcept<int, 0, lastTestSequenceType>(static_cast<int>(TestSequence::Type::Direct)) : getRandom<int, 0, lastTestSequenceType>();
+	auto type = getRandom<int, 0, lastTestSequenceType>();
 	testSequence.m_type = static_cast<TestSequence::Type>(type);
 	testSequence.m_thrust = testSequence.m_type == TestSequence::Type::Direct || getRandomBool();
 	testSequence.m_iterations = getRandom<Count>(1, game.m_config.m_testSequenceIterationsMax);
@@ -518,6 +564,8 @@ static Command popCommand(TestSequences& testSequences, Game const& game, IO& io
 	return command;
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 struct StepIteration
 {
 	Step m_step = 0;
@@ -582,6 +630,8 @@ static std::ostream& operator<<(std::ostream& os, Result const& result)
 		<< " averageRandomImprovementsCount=" << ((100 * result.m_randomImprovementsCount) / result.m_iterationsCount) << "%"
 		<< " averageMutationImprovementsCount=" << ((100 * result.m_mutationImprovementsCount) / result.m_iterationsCount) << "%";
 }
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 static Result runGame(Config const& config, IO& io)
 {
@@ -658,7 +708,7 @@ static Result runGame(Config const& config, IO& io)
 					auto iteration = reachNext(io, game, bestIteration, targetStep, currentState, testSequences);
 					if (iteration < bestIteration)
 					{
-						++result.m_randomImprovementsCount;
+						++result.m_mutationImprovementsCount;
 						logAtLevel(game, RunLevel::Debug, io) << "mutation ";
 						replaceBest(iteration, std::move(testSequences));
 					}
@@ -669,7 +719,7 @@ static Result runGame(Config const& config, IO& io)
 					auto iteration = reachNext(io, game, bestIteration, targetStep, currentState, testSequences);
 					if (iteration < bestIteration)
 					{
-						++result.m_mutationImprovementsCount;
+						++result.m_randomImprovementsCount;
 						logAtLevel(game, RunLevel::Debug, io) << "random ";
 						replaceBest(iteration, std::move(testSequences));
 					}
@@ -682,7 +732,7 @@ static Result runGame(Config const& config, IO& io)
 			bestState = bestCommand.move(game, currentState);
 		}
 		logAtLevel(game, RunLevel::Test, io) << "testsCount=" << testsCount << " totalRandomImprovements=" << result.m_randomImprovementsCount << " totalMutationImprovements=" << result.m_mutationImprovementsCount
-			<< std::endl << " bestIteration: " << bestIteration << " bestCommand: " << bestCommand << " bestTestSequences: " << bestTestSequences << std::endl;
+			<< std::endl << "bestIteration: " << bestIteration << " bestCommand: " << bestCommand << " bestTestSequences: " << bestTestSequences << std::endl;
 		result.m_testsCount += testsCount;
 		logAtLevel(game, RunLevel::Test, io)<< "bestState: " << bestState << std::endl;
 		bool endGame = bestState.m_step == game.m_checkpoints.m_checkpoints.size() || result.m_iterationsCount == iterationLimit;

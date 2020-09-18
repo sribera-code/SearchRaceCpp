@@ -50,12 +50,13 @@ struct SearchRaceTest : public ::testing::Test
 	SearchRaceTest()
 	{
 		m_config.m_simulation = true;
-		m_config.m_runLevel = RunLevel::Test;
 		m_config.m_runLevel = RunLevel::Validation;
+
 		//m_config.m_withRandomTests = false;
+		//m_config.m_runLevel = RunLevel::Test;
 
 		m_maxThreadsCount = 4u;
-		m_runsCount = 1u;
+		m_runsCount = 5u;
 
 		if (m_config.m_runLevel < RunLevel::Validation)
 		{
@@ -121,7 +122,8 @@ struct SearchRaceTest : public ::testing::Test
 		}
 
 		TestIO io;
-		io.m_io.m_err << "------ " << std::endl;
+		if (intermediaryResults)
+			io.m_io.m_err << "------ " << std::endl;
 		io.m_io.m_err << "Tests: " << result << std::endl;
 		EXPECT_LE((result.m_elpased / result.m_iterationsCount), turnTime.count());
 		EXPECT_LT((result.m_iterationsCount / result.m_gamesCount), iterationLimit);
@@ -153,16 +155,25 @@ struct SearchRaceTest : public ::testing::Test
 	void testParameters(std::vector<GameInput> const& inputs)
 	{
 		TestIO io;
+		io.m_io.m_err << "------ " << std::endl;
 		//for (m_config.m_testSequencesSizeMax = 2u; m_config.m_testSequencesSizeMax <= 4; ++m_config.m_testSequencesSizeMax)
 		{
-			//for (m_config.m_testSequenceIterationsMax = 3u; m_config.m_testSequenceIterationsMax <= 10u; m_config.m_testSequenceIterationsMax += 1)
+			//for (m_config.m_testSequenceIterationsMax = 4u; m_config.m_testSequenceIterationsMax <= 6u; m_config.m_testSequenceIterationsMax += 1)
 			{
 				//for (m_config.m_targetStep = 2u; m_config.m_targetStep <= 4u; m_config.m_targetStep += 1)
 				{
-					for (m_config.m_speedFactor = 1.; m_config.m_speedFactor <= 6.; m_config.m_speedFactor += .1)
+					//for (m_config.m_speedFactor = 1.; m_config.m_speedFactor <= 6.; m_config.m_speedFactor += .1)
 					{
-						io.m_io.m_err << "testSequenceIterationsMax=" << m_config.m_testSequenceIterationsMax << " testSequencesSizeMax=" << m_config.m_testSequencesSizeMax << " targetStep=" << m_config.m_targetStep << " speedFactor=" << std::setprecision(2) << m_config.m_speedFactor << std::endl;
-						runGames(inputs, false);
+						//for (int useDisksOfRotation = 1; useDisksOfRotation >= 0; m_config.m_useDisksOfRotation = !!--useDisksOfRotation)
+						{
+							for (m_config.m_targetDistance = 0.; m_config.m_targetDistance <= 5000.; m_config.m_targetDistance += 100.)
+							{
+								io.m_io.m_err << "testSequenceIterationsMax=" << m_config.m_testSequenceIterationsMax << " testSequencesSizeMax=" << m_config.m_testSequencesSizeMax << " targetStep=" << m_config.m_targetStep
+									<< " speedFactor=" << std::setprecision(2) << m_config.m_speedFactor << " useDisksOfRotation=" << m_config.m_useDisksOfRotation << " targetDistance=" << m_config.m_targetDistance << std::endl;
+								runGames(inputs, false);
+								io.m_io.m_err << "------ " << std::endl;
+							}
+						}
 					}
 				}
 			}
