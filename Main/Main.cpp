@@ -5,23 +5,23 @@ enum class RunLevel { Debug = 0, Test = 1, PreValidation = 2, Validation = 3, Re
 struct Config
 {
 	bool m_simulation = false;
-	std::chrono::milliseconds m_turnTime = std::chrono::milliseconds(40);
-	std::chrono::milliseconds m_firstTurnTime = std::chrono::milliseconds(950);
+	std::chrono::milliseconds m_stepTime = std::chrono::milliseconds(40);
+	std::chrono::milliseconds m_firstStepTime = std::chrono::milliseconds(950);
 	RunLevel m_runLevel = RunLevel::Release;
 
 	bool m_withRandomTests = true;
 	unsigned m_testSequencesSizeMax = 3;
 	unsigned m_testSequenceIterationsMax = 5;
 	unsigned m_targetStep = 2;
-	double m_targetDistance = 1800.;
+	double m_targetDistance = 2000.;
 	double m_speedFactor = 3.;
 	bool m_useDisksOfRotation = true;
 
 	Config()
 	{
-		//m_withRandomTests = false;
+		m_withRandomTests = false;
 		//m_runLevel = RunLevel::Debug;
-		//m_speedFactor = 3.;
+		m_speedFactor = 1.;
 	}
 };
 
@@ -73,8 +73,9 @@ const Distance xMax = 16000, yMax = 9000, checkpointRadius = 600;
 const double checkpointRadiusSquare = checkpointRadius * checkpointRadius;
 const double friction = .15;
 const Iteration iterationLimit = 600;
-const std::chrono::milliseconds firstTurnTime(1000);
-const std::chrono::milliseconds turnTime(50);
+const std::chrono::milliseconds firstStepTime(1000);
+const std::chrono::milliseconds stepTime(50);
+Count lapsCount = 3;
 
 template <typename T>
 static T getInfinity()
@@ -242,33 +243,38 @@ struct Checkpoints
 	std::vector<Z> m_checkpoints;
 	std::vector<Distance> m_distances;
 	std::vector<Step> m_targetSteps;
+	Count m_stepsByLap = 0u;
 
-	static Checkpoints read(IO& io, Config const& config)
+	void fill(IO& io, Config const& config)
 	{
-		Checkpoints checkpoints;
+		std::generate_n(std::back_inserter(m_checkpoints), io.read<Step>(true), [&io]() { return io.read<Z>(true); });
 
-		std::generate_n(std::back_inserter(checkpoints.m_checkpoints), io.read<Step>(true), [&io]() { return io.read<Z>(true); });
+		m_distances.resize(m_checkpoints.size(), 0.);
+		m_distances[0] = std::abs(m_checkpoints[0] - m_checkpoints[m_checkpoints.size() - 1]);
+		for (Index index = 1; index < m_checkpoints.size(); ++index)
+			m_distances[index] = std::abs(m_checkpoints[index] - m_checkpoints[index - 1]);
 
-		checkpoints.m_distances.resize(checkpoints.m_checkpoints.size(), 0.);
-		checkpoints.m_distances[0] = std::abs(checkpoints.m_checkpoints[0] - checkpoints.m_checkpoints[checkpoints.m_checkpoints.size() - 1]);
-		for (Index index = 1; index < checkpoints.m_checkpoints.size(); ++index)
-			checkpoints.m_distances[index] = std::abs(checkpoints.m_checkpoints[index] - checkpoints.m_checkpoints[index - 1]);
-		
-		checkpoints.m_targetSteps.resize(checkpoints.m_checkpoints.size(), 0u);
-		for (Step step = 0; step < checkpoints.m_targetSteps.size(); ++step)
+		m_targetSteps.resize(m_checkpoints.size(), 0u);
+		for (Step step = 0; step < m_targetSteps.size(); ++step)
 		{
 			auto targetStep = step + 2;
 			Distance distance = config.m_targetDistance;
-			while (targetStep < checkpoints.m_distances.size())
+			while (targetStep < m_distances.size())
 			{
-				distance -= checkpoints.m_distances[targetStep];
+				distance -= m_distances[targetStep];
 				if (distance <= 0.)
 					break;
 				++targetStep;
 			}
-			checkpoints.m_targetSteps[step] = std::min(std::max(targetStep, step + config.m_targetStep), checkpoints.m_checkpoints.size());
+			m_targetSteps[step] = std::min(std::max(targetStep, step + config.m_targetStep), m_checkpoints.size());
 		}
+		m_stepsByLap = m_checkpoints.size() / lapsCount;
+	}
 
+	static Checkpoints read(IO& io, Config const& config)
+	{
+		Checkpoints checkpoints;
+		checkpoints.fill(io, config);
 		return checkpoints;
 	}
 };
@@ -624,7 +630,7 @@ static Result operator+(Result const& lhs, Result const& rhs)
 
 static std::ostream& operator<<(std::ostream& os, Result const& result)
 {
-	return os << "gamesCount=" << result.m_gamesCount << " averageIterationsCount=" << (result.m_iterationsCount / result.m_gamesCount)
+	return os << std::fixed << std::setprecision(2) << "gamesCount=" << result.m_gamesCount << " averageIterationsCount=" << (result.m_iterationsCount / result.m_gamesCount)
 		<< " averageElapsed=" << (result.m_elpased / result.m_iterationsCount)
 		<< " averageTestsCount=" << (result.m_testsCount / result.m_iterationsCount)
 		<< " averageRandomImprovementsCount=" << ((100 * result.m_randomImprovementsCount) / result.m_iterationsCount) << "%"
@@ -640,7 +646,7 @@ static Result runGame(Config const& config, IO& io)
 	game.m_config = config;
 	logAtLevel(game, RunLevel::Test, io) << "seed=" << seed << std::endl;
 	game.m_checkpoints = Checkpoints::read(io, game.m_config);
-	auto timepoint = now();
+	auto timePoint = now();
 	logAtLevel(game, RunLevel::Debug, io) << io.getLastRead() << std::endl;
 	logAtLevel(game, RunLevel::Test, io) << game.m_checkpoints << std::endl;
 	State lastState;
@@ -648,10 +654,10 @@ static Result runGame(Config const& config, IO& io)
 	result.m_gamesCount = 1;
 
 	TestSequences bestTestSequences;
-	StepIteration bestIteration;
 
 	while (true)
 	{
+		StepIteration bestIteration;
 		auto currentState = game.m_config.m_simulation && result.m_iterationsCount ? lastState : State::read(io);
 		currentState.m_iteration = result.m_iterationsCount;
 		logAtLevel(game, RunLevel::Debug, io) << io.getLastRead() << std::endl;
@@ -662,13 +668,15 @@ static Result runGame(Config const& config, IO& io)
 				logDifference(game, io, lastState, currentState);
 				assertAtLevel(game, RunLevel::Validation, false);
 			}
+		TimePoint limitTimePoint = timePoint + (result.m_iterationsCount ? game.m_config.m_stepTime : game.m_config.m_firstStepTime);
 		++result.m_iterationsCount;
 		auto targetStep = game.m_checkpoints.m_targetSteps[currentState.m_step];
-
+		auto lap = currentState.m_step / lapsCount;
+		auto lapStep = currentState.m_step % lapsCount;
 		Command bestCommand;
 		State bestState;
 
-		logAtLevel(game, RunLevel::Debug, io) << "step=" << currentState.m_step << " targetStep=" << targetStep << std::endl;
+		logAtLevel(game, RunLevel::Debug, io) << "step=" << currentState.m_step << " targetStep=" << targetStep << " lap=" << lap << " lapStep=" << lapStep << std::endl;
 		Count testsCount = 0;
 		if (game.m_config.m_withRandomTests)
 		{
@@ -700,7 +708,7 @@ static Result runGame(Config const& config, IO& io)
 				}
 			}
 			auto initialTestSequences = bestTestSequences;
-			while (now() - timepoint < game.m_config.m_turnTime)
+			while (now() < limitTimePoint)
 			{
 				{
 					++testsCount;
@@ -743,9 +751,9 @@ static Result runGame(Config const& config, IO& io)
 		}
 		lastState = bestState;
 		io.m_out << bestCommand << std::endl;
-		logAtLevel(game, RunLevel::Test, io) << "elapsed=" << getMillisecondsElapsed(timepoint, now()) << "ms" << std::endl;
-		//assertAtLevel(game, RunLevel::Debug, now() - timepoint <= (result.m_iterationsCount <= 1 ? firstTurnTime : turnTime));
-		timepoint = now();
+		logAtLevel(game, RunLevel::Test, io) << "elapsed=" << getMillisecondsElapsed(timePoint, now()) << "ms" << std::endl;
+		//assertAtLevel(game, RunLevel::Debug, now() - timePoint <= (result.m_iterationsCount <= 1 ? firstLapTime : turnTime));
+		timePoint = now();
 		if (endGame)
 			break;
 	}

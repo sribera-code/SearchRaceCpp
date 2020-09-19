@@ -54,9 +54,12 @@ struct SearchRaceTest : public ::testing::Test
 
 		//m_config.m_withRandomTests = false;
 		//m_config.m_runLevel = RunLevel::Test;
+		m_testParameters = true;
 
 		m_maxThreadsCount = 4u;
-		m_runsCount = 5u;
+		m_runsCount = 3u;
+
+
 
 		if (m_config.m_runLevel < RunLevel::Validation)
 		{
@@ -66,7 +69,8 @@ struct SearchRaceTest : public ::testing::Test
 	}
 
 	Config m_config;
-	Count m_maxThreadsCount = {}, m_runsCount = {};
+	Count m_maxThreadsCount = 0, m_runsCount = 0;
+	bool m_testParameters = false;
 
 	Result runGame(TestIO& io, GameInput const& input)
 	{
@@ -116,7 +120,7 @@ struct SearchRaceTest : public ::testing::Test
 				std::this_thread::yield();
 			if (intermediaryResults)
 				runInput.m_io.m_io.m_err << "Test(" << runInput.m_input.m_label << "): " << runInput.m_result << std::endl;
-			EXPECT_LE((runInput.m_result.m_elpased / runInput.m_result.m_iterationsCount), turnTime.count());
+			EXPECT_LE(runInput.m_result.m_elpased, firstStepTime.count() + (runInput.m_result.m_iterationsCount - 1) * stepTime.count());
 			EXPECT_LT((runInput.m_result.m_iterationsCount / runInput.m_result.m_gamesCount), iterationLimit);
 			result = result + runInput.m_result;
 		}
@@ -125,7 +129,7 @@ struct SearchRaceTest : public ::testing::Test
 		if (intermediaryResults)
 			io.m_io.m_err << "------ " << std::endl;
 		io.m_io.m_err << "Tests: " << result << std::endl;
-		EXPECT_LE((result.m_elpased / result.m_iterationsCount), turnTime.count());
+		EXPECT_LE(result.m_elpased, firstStepTime.count() + (result.m_iterationsCount - 1) * stepTime.count());
 		EXPECT_LT((result.m_iterationsCount / result.m_gamesCount), iterationLimit);
 	}
 
@@ -162,13 +166,13 @@ struct SearchRaceTest : public ::testing::Test
 			{
 				//for (m_config.m_targetStep = 2u; m_config.m_targetStep <= 4u; m_config.m_targetStep += 1)
 				{
-					//for (m_config.m_speedFactor = 1.; m_config.m_speedFactor <= 6.; m_config.m_speedFactor += .1)
+					for (m_config.m_speedFactor = 1.; m_config.m_speedFactor <= 6.; m_config.m_speedFactor += .1)
 					{
 						//for (int useDisksOfRotation = 1; useDisksOfRotation >= 0; m_config.m_useDisksOfRotation = !!--useDisksOfRotation)
 						{
-							for (m_config.m_targetDistance = 0.; m_config.m_targetDistance <= 5000.; m_config.m_targetDistance += 100.)
+							//for (m_config.m_targetDistance = 0.; m_config.m_targetDistance <= 10000.; m_config.m_targetDistance += 1000.)
 							{
-								io.m_io.m_err << "testSequenceIterationsMax=" << m_config.m_testSequenceIterationsMax << " testSequencesSizeMax=" << m_config.m_testSequencesSizeMax << " targetStep=" << m_config.m_targetStep
+								io.m_io.m_err << std::fixed << std::setprecision(2) << "testSequenceIterationsMax=" << m_config.m_testSequenceIterationsMax << " testSequencesSizeMax=" << m_config.m_testSequencesSizeMax << " targetStep=" << m_config.m_targetStep
 									<< " speedFactor=" << std::setprecision(2) << m_config.m_speedFactor << " useDisksOfRotation=" << m_config.m_useDisksOfRotation << " targetDistance=" << m_config.m_targetDistance << std::endl;
 								runGames(inputs, false);
 								io.m_io.m_err << "------ " << std::endl;
@@ -252,9 +256,7 @@ TEST_F(SearchRaceTest, Transfer)
 
 TEST_F(SearchRaceTest, Simulations)
 {
-	runGames
-	//testParameters
-	({
+	std::vector<GameInput> const& inputs = {
 		{ "1", "9 \n2757 4659 \n3358 2838 \n10353 1986 \n2757 4659 \n3358 2838 \n10353 1986 \n2757 4659 \n3358 2838 \n10353 1986 \n"
 		, "0 10353 1986 0 0 161 \n" },
 		{ "2", "9 \n3431 6328 \n4284 2801 \n11141 4590 \n3431 6328 \n4284 2801 \n11141 4590 \n3431 6328 \n4284 2801 \n11141 4590 \n"
@@ -293,7 +295,11 @@ TEST_F(SearchRaceTest, Simulations)
 		, "0 1000 4500 0 0 338 \n" },
 		{ "19", "18 \n15000 8000 \n1000 8000 \n15000 1000 \n1000 4500 \n15000 4500 \n1000 1000 \n15000 8000 \n1000 8000 \n15000 1000 \n1000 4500 \n15000 4500 \n1000 1000 \n15000 8000 \n1000 8000 \n15000 1000 \n1000 4500 \n15000 4500 \n1000 1000 \n"
 		, "0 1000 1000 0 0 27 \n" }
-	});
+	};
+	if (m_testParameters)
+		testParameters(inputs);
+	else
+		runGames(inputs);
 }
 
 
