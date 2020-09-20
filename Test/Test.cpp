@@ -59,9 +59,7 @@ struct SearchRaceTest : public ::testing::Test
 		m_maxThreadsCount = 4u;
 		m_runsCount = 3u;
 
-
-
-		if (m_config.m_runLevel < RunLevel::Validation)
+		if (m_config.m_runLevel < RunLevel::Validation || !m_config.m_withRandomTests)
 		{
 			m_maxThreadsCount = 1u;
 			m_runsCount = 1u;

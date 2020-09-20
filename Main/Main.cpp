@@ -21,7 +21,7 @@ struct Config
 	{
 		m_withRandomTests = false;
 		//m_runLevel = RunLevel::Debug;
-		m_speedFactor = 1.;
+		m_speedFactor = 3.;
 	}
 };
 
