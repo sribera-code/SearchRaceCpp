@@ -20,7 +20,7 @@ struct Config
 	Config()
 	{
 		m_withRandomTests = false;
-		//m_runLevel = RunLevel::Debug;
+		m_runLevel = RunLevel::Debug;
 		m_speedFactor = 3.;
 	}
 };
@@ -430,11 +430,41 @@ static Command getDirectCommand(Game const& game, IO& io, State const& state)
 {
 	//logAtLevel(game, RunLevel::Debug, io) << "getDirectCommand" << " state:" << state << std::endl;
 	auto const& checkpoint = game.m_checkpoints.m_checkpoints[state.m_step];
-	auto nexTarget = checkpoint - state.m_position - game.m_config.m_speedFactor * state.m_speed;
-	auto angleToTarget = std::arg(nexTarget) * degByRad;
+	auto nextTarget = checkpoint - state.m_position - game.m_config.m_speedFactor * state.m_speed;
+	auto angleToTarget = std::arg(nextTarget) * degByRad;
 	auto commandAngle = get180Angle(static_cast<Angle>(std::round(angleToTarget - state.m_angle)));
 	if (isValidAngle(commandAngle))
 		return Command(commandAngle, thrustMax);
+	if (game.m_config.m_useDisksOfRotation && state.isOutDisksOfRotation(game, io, checkpoint, checkpointRadius))
+		return Command(getValidAngle(commandAngle), thrustMax);
+	return Command(getValidAngle(commandAngle), 0);
+}
+
+static Command getDirectCommand2(Game const& game, IO& io, State const& state)
+{
+	auto const& checkpoint = game.m_checkpoints.m_checkpoints[state.m_step];
+	auto target = checkpoint - state.m_position;
+	auto aimedAngle = std::arg(target) * degByRad;
+	auto targetSpeed = target * std::conj(state.m_speed);
+	if (targetSpeed.real() <= 0)
+	{
+		Thrust thrust = 0;
+		if (std::abs(get180Angle(static_cast<Angle>(std::round(state.m_angle - aimedAngle)))) < 90.)
+			if (!game.m_config.m_useDisksOfRotation || state.isOutDisksOfRotation(game, io, checkpoint, checkpointRadius))
+				thrust = thrustMax;
+		auto commandAngle = get180Angle(static_cast<Angle>(std::round(aimedAngle - state.m_angle)));
+		return Command(getValidAngle(commandAngle), thrust);
+	}
+	Thrust thrust = 0;
+	auto absTarget = std::abs(target);
+	auto heightTarget = std::abs(targetSpeed.imag()) / absTarget;
+	auto radius = static_cast<Distance>(thrustMax);
+	auto heightAngle = heightTarget < radius ? std::acos(heightTarget / radius) * degByRad : 0;
+	auto deltatAimedAngle = (90. - heightAngle) * copysign(1., targetSpeed.imag());
+	aimedAngle += deltatAimedAngle;
+	auto commandAngle = get180Angle(static_cast<Angle>(std::round(aimedAngle - state.m_angle)));
+	if (!game.m_config.m_useDisksOfRotation && isValidAngle(commandAngle))
+		return Command(getValidAngle(commandAngle), thrustMax);
 	if (game.m_config.m_useDisksOfRotation && state.isOutDisksOfRotation(game, io, checkpoint, checkpointRadius))
 		return Command(getValidAngle(commandAngle), thrustMax);
 	return Command(getValidAngle(commandAngle), 0);
@@ -736,7 +766,7 @@ static Result runGame(Config const& config, IO& io)
 		}
 		else
 		{
-			bestCommand = getDirectCommand(game, io, currentState);
+			bestCommand = getDirectCommand2(game, io, currentState);
 			bestState = bestCommand.move(game, currentState);
 		}
 		logAtLevel(game, RunLevel::Test, io) << "testsCount=" << testsCount << " totalRandomImprovements=" << result.m_randomImprovementsCount << " totalMutationImprovements=" << result.m_mutationImprovementsCount

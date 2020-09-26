@@ -52,9 +52,10 @@ struct SearchRaceTest : public ::testing::Test
 		m_config.m_simulation = true;
 		m_config.m_runLevel = RunLevel::Validation;
 
-		//m_config.m_withRandomTests = false;
-		//m_config.m_runLevel = RunLevel::Test;
-		m_testParameters = true;
+		m_config.m_withRandomTests = false;
+		m_config.m_runLevel = RunLevel::Test;
+		m_config.m_runLevel = RunLevel::Debug;
+		//m_testParameters = true;
 
 		m_maxThreadsCount = 4u;
 		m_runsCount = 3u;
