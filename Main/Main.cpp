@@ -19,8 +19,8 @@ struct Config
 
 	Config()
 	{
-		m_withRandomTests = false;
-		m_runLevel = RunLevel::Debug;
+		//m_withRandomTests = false;
+		//m_runLevel = RunLevel::Debug;
 		m_speedFactor = 3.;
 	}
 };
@@ -426,11 +426,11 @@ static std::ostream& operator<<(std::ostream& os, Command const& c)
 	return os << "EXPERT " << c.m_angle << " " << c.m_thrust;
 }
 
-static Command getDirectCommand(Game const& game, IO& io, State const& state)
+static Command getDirectCommand(Game const& game, IO& io, State const& state, double speedFactor)
 {
 	//logAtLevel(game, RunLevel::Debug, io) << "getDirectCommand" << " state:" << state << std::endl;
 	auto const& checkpoint = game.m_checkpoints.m_checkpoints[state.m_step];
-	auto nextTarget = checkpoint - state.m_position - game.m_config.m_speedFactor * state.m_speed;
+	auto nextTarget = checkpoint - state.m_position - speedFactor * state.m_speed;
 	auto angleToTarget = std::arg(nextTarget) * degByRad;
 	auto commandAngle = get180Angle(static_cast<Angle>(std::round(angleToTarget - state.m_angle)));
 	if (isValidAngle(commandAngle))
@@ -474,10 +474,17 @@ static Command getDirectCommand2(Game const& game, IO& io, State const& state)
 
 struct TestSequence
 {
-	enum class Type { Direct = 0, Left = 1, Right = 2, Count = 3 };
+	enum class Type { Direct = 0, Forced = 1, Count = 2 };
 
 	Type m_type = Type::Direct;
-	bool m_thrust = true;
+	union
+	{
+		struct
+		{
+			Angle m_angle;
+			Thrust m_thrust;
+		};
+	};
 	Count m_iterations = {};
 };
 
@@ -485,18 +492,25 @@ static std::ostream& operator<<(std::ostream& os, TestSequence const& testSequen
 {
 	if (testSequence.m_type == TestSequence::Type::Direct)
 		os << "D";
-	else if (testSequence.m_type == TestSequence::Type::Left)
-		os << "L";
-	else // if (testSequence.m_type == TestSequence::Type::Right)
-		os << "R";
-	if (testSequence.m_thrust)
-		os << "T";
+	else if (testSequence.m_type == TestSequence::Type::Forced)
+		os << "F" << testSequence.m_angle << "T" << testSequence.m_thrust;
 	return os << testSequence.m_iterations;
 }
 
 static bool operator==(TestSequence const& lhs, TestSequence const& rhs)
 {
-	return lhs.m_type == rhs.m_type && lhs.m_thrust == rhs.m_thrust && lhs.m_iterations == rhs.m_iterations;
+	if (lhs.m_type == rhs.m_type && lhs.m_iterations == rhs.m_iterations)
+	{
+		if (lhs.m_type == TestSequence::Type::Direct)
+		{
+			return true;
+		}
+		if (lhs.m_type == TestSequence::Type::Forced)
+		{
+			return lhs.m_angle == rhs.m_angle && lhs.m_thrust == rhs.m_thrust;
+		}
+	}
+	return false;
 }
 
 const auto lastTestSequenceType = static_cast<int>(TestSequence::Type::Count) - 1;
@@ -527,7 +541,11 @@ static TestSequence getRandomTestSequence(Game const& game, bool last)
 	TestSequence testSequence;
 	auto type = getRandom<int, 0, lastTestSequenceType>();
 	testSequence.m_type = static_cast<TestSequence::Type>(type);
-	testSequence.m_thrust = testSequence.m_type == TestSequence::Type::Direct || getRandomBool();
+	if (testSequence.m_type == TestSequence::Type::Forced)
+	{
+		testSequence.m_angle = getRandom<int, -1, 1>() * angleMax;
+		testSequence.m_thrust = getRandom<int, 0, 1>() * thrustMax;
+	}
 	testSequence.m_iterations = getRandom<Count>(1, game.m_config.m_testSequenceIterationsMax);
 	return testSequence;
 }
@@ -581,19 +599,15 @@ static TestSequences mutateTestSequences(Game const& game, TestSequences testSeq
 static Command popCommand(TestSequences& testSequences, Game const& game, IO& io, State state)
 {
 	if (testSequences.empty())
-		return getDirectCommand(game, io, state);
+		return getDirectCommand(game, io, state, game.m_config.m_speedFactor);
 	Command command;
 	auto& testSequence = testSequences.front();
 	if (testSequence.m_type == TestSequence::Type::Direct)
-		command = getDirectCommand(game, io, state);
-	else
+		command = getDirectCommand(game, io, state, game.m_config.m_speedFactor);
+	else if (testSequence.m_type == TestSequence::Type::Forced)
 	{
-		if (testSequence.m_type == TestSequence::Type::Left)
-			command.m_angle = +angleMax;
-		else // if (testSequence.m_type == TestSequence::Type::Right)
-			command.m_angle = -angleMax;
-		if (testSequence.m_thrust)
-			command.m_thrust = thrustMax;
+		command.m_angle = testSequence.m_angle;
+		command.m_thrust = testSequence.m_thrust;
 	}
 	if (!--testSequence.m_iterations)
 		testSequences.pop_front();
@@ -766,7 +780,7 @@ static Result runGame(Config const& config, IO& io)
 		}
 		else
 		{
-			bestCommand = getDirectCommand2(game, io, currentState);
+			bestCommand = getDirectCommand(game, io, currentState, game.m_config.m_speedFactor);
 			bestState = bestCommand.move(game, currentState);
 		}
 		logAtLevel(game, RunLevel::Test, io) << "testsCount=" << testsCount << " totalRandomImprovements=" << result.m_randomImprovementsCount << " totalMutationImprovements=" << result.m_mutationImprovementsCount
