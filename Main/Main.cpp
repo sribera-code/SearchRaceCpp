@@ -14,14 +14,20 @@ struct Config
 	unsigned m_testSequenceIterationsMax = 5;
 	unsigned m_targetStep = 2;
 	double m_targetDistance = 2000.;
-	double m_speedFactor = 3.;
+	double m_speedFactor = 3.5;
 	bool m_useDisksOfRotation = true;
+	unsigned m_directCommandVersion = 0;
+	double m_radiusFactor = .5;
 
 	Config()
 	{
 		//m_withRandomTests = false;
 		//m_runLevel = RunLevel::Debug;
-		m_speedFactor = 3.;
+		//m_speedFactor = 5.;
+		//m_directCommandVersion = 1;
+		//m_speedFactor = 3.5;
+		//m_directCommandVersion = 0;
+		//m_radiusFactor = 2;
 	}
 };
 
@@ -350,7 +356,7 @@ struct State
 		auto distance2 = std::abs(point - diskCenter2);
 		auto disksRadius = std::abs(m_speed) * halfInverseSinHalfAngleMax;
 		//logAtLevel(game, RunLevel::Debug, io) << "isOutDisksOfRotation" << " distance1=" << distance1 << " distance2=" << distance2 << " disksRadius=" << disksRadius << " speed=" << std::abs(m_speed) << std::endl;
-		return distance1 > disksRadius && distance2 > disksRadius;
+		return distance1 - pointRadius > disksRadius && distance2 - pointRadius > disksRadius;
 	}
 };
 
@@ -428,16 +434,33 @@ static std::ostream& operator<<(std::ostream& os, Command const& c)
 
 static Command getDirectCommand(Game const& game, IO& io, State const& state, double speedFactor)
 {
-	//logAtLevel(game, RunLevel::Debug, io) << "getDirectCommand" << " state:" << state << std::endl;
-	auto const& checkpoint = game.m_checkpoints.m_checkpoints[state.m_step];
-	auto nextTarget = checkpoint - state.m_position - speedFactor * state.m_speed;
-	auto angleToTarget = std::arg(nextTarget) * degByRad;
-	auto commandAngle = get180Angle(static_cast<Angle>(std::round(angleToTarget - state.m_angle)));
-	if (isValidAngle(commandAngle))
-		return Command(commandAngle, thrustMax);
-	if (game.m_config.m_useDisksOfRotation && state.isOutDisksOfRotation(game, io, checkpoint, checkpointRadius))
-		return Command(getValidAngle(commandAngle), thrustMax);
-	return Command(getValidAngle(commandAngle), 0);
+	if (game.m_config.m_directCommandVersion == 0)
+	{
+		//logAtLevel(game, RunLevel::Debug, io) << "getDirectCommand" << " state:" << state << std::endl;
+		auto const& checkpoint = game.m_checkpoints.m_checkpoints[state.m_step];
+		auto nextTarget = checkpoint - state.m_position - speedFactor * state.m_speed;
+		auto angleToTarget = std::arg(nextTarget) * degByRad;
+		auto commandAngle = get180Angle(static_cast<Angle>(std::round(angleToTarget - state.m_angle)));
+		if (isValidAngle(commandAngle))
+			return Command(commandAngle, thrustMax);
+		if (game.m_config.m_useDisksOfRotation && state.isOutDisksOfRotation(game, io, checkpoint, game.m_config.m_radiusFactor * checkpointRadius))
+			return Command(getValidAngle(commandAngle), thrustMax);
+		return Command(getValidAngle(commandAngle), 0);
+	}
+	if (game.m_config.m_directCommandVersion == 1)
+	{
+		//logAtLevel(game, RunLevel::Debug, io) << "getDirectCommand" << " state:" << state << std::endl;
+		auto const& checkpoint = game.m_checkpoints.m_checkpoints[state.m_step];
+		auto nextTarget = checkpoint - state.m_position - speedFactor * state.m_speed;
+		auto angleToTarget = std::arg(nextTarget) * degByRad;
+		auto commandAngle = get180Angle(static_cast<Angle>(std::round(angleToTarget - state.m_angle)));
+		if (game.m_config.m_useDisksOfRotation && !state.isOutDisksOfRotation(game, io, checkpoint, game.m_config.m_radiusFactor * checkpointRadius))
+			return Command(std::copysign(angleMax, getValidAngle(commandAngle)), 0);
+		if (isValidAngle(commandAngle))
+			return Command(commandAngle, thrustMax);
+		return Command(getValidAngle(commandAngle), 0);
+	}
+	return {};
 }
 
 static Command getDirectCommand2(Game const& game, IO& io, State const& state)
@@ -481,6 +504,10 @@ struct TestSequence
 	{
 		struct
 		{
+			double m_speedFactor;
+		};
+		struct
+		{
 			Angle m_angle;
 			Thrust m_thrust;
 		};
@@ -504,6 +531,22 @@ static bool operator==(TestSequence const& lhs, TestSequence const& rhs)
 		if (lhs.m_type == TestSequence::Type::Direct)
 		{
 			return true;
+		}
+		if (lhs.m_type == TestSequence::Type::Forced)
+		{
+			return lhs.m_angle == rhs.m_angle && lhs.m_thrust == rhs.m_thrust;
+		}
+	}
+	return false;
+}
+
+static bool compareTestSequence(TestSequence const& lhs, TestSequence const& rhs)
+{
+	if (lhs.m_type == rhs.m_type)
+	{
+		if (lhs.m_type == TestSequence::Type::Direct)
+		{
+			return lhs.m_speedFactor == rhs.m_speedFactor;
 		}
 		if (lhs.m_type == TestSequence::Type::Forced)
 		{
@@ -539,12 +582,16 @@ static std::ostream& operator<<(std::ostream& os, TestSequences const& testSeque
 static TestSequence getRandomTestSequence(Game const& game, bool last)
 {
 	TestSequence testSequence;
-	auto type = getRandom<int, 0, lastTestSequenceType>();
-	testSequence.m_type = static_cast<TestSequence::Type>(type);
-	if (testSequence.m_type == TestSequence::Type::Forced)
+	auto type = getRandom<int, 0, lastTestSequenceType + 1>();
+	testSequence.m_type = static_cast<TestSequence::Type>(std::min(type, lastTestSequenceType));
+	if (testSequence.m_type == TestSequence::Type::Direct)
 	{
-		testSequence.m_angle = getRandom<int, -1, 1>() * angleMax;
-		testSequence.m_thrust = getRandom<int, 0, 1>() * thrustMax;
+		testSequence.m_speedFactor = game.m_config.m_speedFactor;
+	}
+	else if (testSequence.m_type == TestSequence::Type::Forced)
+	{
+		testSequence.m_angle = getRandomBool() ? +angleMax : -angleMax;
+		testSequence.m_thrust = getRandomBool() ? thrustMax : 0;
 	}
 	testSequence.m_iterations = getRandom<Count>(1, game.m_config.m_testSequenceIterationsMax);
 	return testSequence;
@@ -553,9 +600,9 @@ static TestSequence getRandomTestSequence(Game const& game, bool last)
 static TestSequence getRandomTestSequence(Game const& game, bool last, TestSequence* previous, TestSequence* next)
 {
 	auto random = getRandomTestSequence(game, last);
-	if (previous && *previous == random)
+	if (previous && compareTestSequence(*previous, random))
 		return getRandomTestSequence(game, last, previous, next);
-	if (next && *next == random)
+	if (next && compareTestSequence(*next, random))
 		return getRandomTestSequence(game, last, previous, next);
 	return random;
 }
@@ -603,7 +650,9 @@ static Command popCommand(TestSequences& testSequences, Game const& game, IO& io
 	Command command;
 	auto& testSequence = testSequences.front();
 	if (testSequence.m_type == TestSequence::Type::Direct)
-		command = getDirectCommand(game, io, state, game.m_config.m_speedFactor);
+	{
+		command = getDirectCommand(game, io, state, testSequence.m_speedFactor);
+	}
 	else if (testSequence.m_type == TestSequence::Type::Forced)
 	{
 		command.m_angle = testSequence.m_angle;
@@ -660,6 +709,7 @@ struct Result
 {
 	Count m_gamesCount = 0u;
 	Count m_iterationsCount = 0u;
+	double m_collisionTime = 0.;
 	Milliseconds m_elpased = 0;
 	Count m_testsCount = 0u;
 	Count m_randomImprovementsCount = 0u;
@@ -668,17 +718,18 @@ struct Result
 
 static Result operator+(Result const& lhs, Result const& rhs)
 {
-	return { lhs.m_gamesCount + rhs.m_gamesCount, lhs.m_iterationsCount + rhs.m_iterationsCount, lhs.m_elpased + rhs.m_elpased,
+	return { lhs.m_gamesCount + rhs.m_gamesCount, lhs.m_iterationsCount + rhs.m_iterationsCount, lhs.m_collisionTime + rhs.m_collisionTime, lhs.m_elpased + rhs.m_elpased,
 		lhs.m_testsCount + rhs.m_testsCount, lhs.m_randomImprovementsCount + rhs.m_randomImprovementsCount, lhs.m_mutationImprovementsCount + rhs.m_mutationImprovementsCount };
 }
 
 static std::ostream& operator<<(std::ostream& os, Result const& result)
 {
-	return os << std::fixed << std::setprecision(2) << "gamesCount=" << result.m_gamesCount << " averageIterationsCount=" << (result.m_iterationsCount / result.m_gamesCount)
-		<< " averageElapsed=" << (result.m_elpased / result.m_iterationsCount)
-		<< " averageTestsCount=" << (result.m_testsCount / result.m_iterationsCount)
-		<< " averageRandomImprovementsCount=" << ((100 * result.m_randomImprovementsCount) / result.m_iterationsCount) << "%"
-		<< " averageMutationImprovementsCount=" << ((100 * result.m_mutationImprovementsCount) / result.m_iterationsCount) << "%";
+	os << std::fixed << std::setprecision(2) << "gamesCount=" << result.m_gamesCount << " averageIterationsCount=" << ((result.m_collisionTime + result.m_iterationsCount) / result.m_gamesCount) << " averageElapsed=" << (result.m_elpased / result.m_iterationsCount);
+	if (result.m_testsCount)
+		os  << " averageTestsCount=" << (result.m_testsCount / result.m_iterationsCount)
+			<< " averageRandomImprovementsCount=" << ((100 * result.m_randomImprovementsCount) / result.m_iterationsCount) << "%"
+			<< " averageMutationImprovementsCount=" << ((100 * result.m_mutationImprovementsCount) / result.m_iterationsCount) << "%";
+	return os;
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -790,6 +841,7 @@ static Result runGame(Config const& config, IO& io)
 		bool endGame = bestState.m_step == game.m_checkpoints.m_checkpoints.size() || result.m_iterationsCount == iterationLimit;
 		if (endGame)
 		{
+			result.m_collisionTime = bestState.m_collisionTime;
 			result.m_elpased = getMillisecondsElapsed(startTimepoint, now());
 			logAtLevel(game, RunLevel::PreValidation, io) << result << std::endl;
 		}

@@ -52,15 +52,22 @@ struct SearchRaceTest : public ::testing::Test
 		m_config.m_simulation = true;
 		m_config.m_runLevel = RunLevel::Validation;
 
+		//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 		//m_config.m_withRandomTests = false;
 		//m_config.m_runLevel = RunLevel::Test;
 		//m_config.m_runLevel = RunLevel::Debug;
 		//m_testParameters = true;
+		//m_specificTest = "3";
+		//m_config.m_speedFactor = 0.;
+		//m_config.m_directCommandVersion = 0;
 
-		m_maxThreadsCount = 3u;
-		m_runsCount = 2u;
+		m_maxThreadsCount = 2u;
+		m_runsCount = 4u;
 
-		if (m_config.m_runLevel < RunLevel::Validation || !m_config.m_withRandomTests)
+		//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+		if (m_config.m_runLevel < RunLevel::Validation || !m_config.m_withRandomTests || !m_specificTest.empty())
 		{
 			m_maxThreadsCount = 1u;
 			m_runsCount = 1u;
@@ -70,6 +77,7 @@ struct SearchRaceTest : public ::testing::Test
 	Config m_config;
 	Count m_maxThreadsCount = 0, m_runsCount = 0;
 	bool m_testParameters = false;
+	std::string m_specificTest;
 
 	Result runGame(TestIO& io, GameInput const& input)
 	{
@@ -77,10 +85,16 @@ struct SearchRaceTest : public ::testing::Test
 		return ::runGame(m_config, io.m_io);
 	}
 
-	static void simulateGame(SearchRaceTest* test, TestIO* io, GameInput const& input, Result* result)
+	static void simulateGame(SearchRaceTest* test, TestIO* io, GameInput const& input, Result* result, Result* resultWithoutRandomTests)
 	{
 		for (unsigned run = 0u; run < test->m_runsCount; ++run)
 			*result = *result + test->runGame(*io, input);
+		if (test->m_config.m_withRandomTests)
+		{
+			test->m_config.m_withRandomTests = false;
+			*resultWithoutRandomTests = *resultWithoutRandomTests + test->runGame(*io, input);
+			test->m_config.m_withRandomTests = true;
+		}
 	}
 
 	struct RunInput
@@ -94,6 +108,7 @@ struct SearchRaceTest : public ::testing::Test
 		TestIO m_io;
 		GameInput const& m_input;
 		Result m_result;
+		Result m_resultWithoutRandomTests;
 		bool m_done;
 	};
 
@@ -104,30 +119,40 @@ struct SearchRaceTest : public ::testing::Test
 		while (index < runInputs->size())
 		{
 			auto& runInput = (*runInputs)[index];
-			simulateGame(&runInput.m_test, &runInput.m_io, runInput.m_input, &runInput.m_result);
+			simulateGame(&runInput.m_test, &runInput.m_io, runInput.m_input, &runInput.m_result, &runInput.m_resultWithoutRandomTests);
 			runInput.m_done = true;
 			index = next();
 		}
 	}
 
-	static void displayResults(std::vector<RunInput>* runInputs, bool intermediaryResults)
+	static void displayResults(std::vector<RunInput>* runInputs, bool intermediaryResults, bool intermediaryChecks, bool withRandomTests)
 	{
-		Result result;
+		Result result, resultWithoutRandomTests;
 		for (auto const& runInput : *runInputs)
 		{
 			while (!runInput.m_done)
 				std::this_thread::yield();
 			if (intermediaryResults)
+			{
 				runInput.m_io.m_io.m_err << "Test(" << runInput.m_input.m_label << "): " << runInput.m_result << std::endl;
-			EXPECT_LE(runInput.m_result.m_elpased, firstStepTime.count() + (runInput.m_result.m_iterationsCount - 1) * stepTime.count());
-			EXPECT_LT((runInput.m_result.m_iterationsCount / runInput.m_result.m_gamesCount), iterationLimit);
+				if (withRandomTests)
+					runInput.m_io.m_io.m_err << "Test(" << runInput.m_input.m_label << "): " << runInput.m_resultWithoutRandomTests << " [non random]" << std::endl;
+			}
+			if (intermediaryChecks)
+			{
+				EXPECT_LE(runInput.m_result.m_elpased, firstStepTime.count() + (runInput.m_result.m_iterationsCount - 1) * stepTime.count()) << "Check elapsed on test " << runInput.m_input.m_label << " failed!";
+				EXPECT_LT((runInput.m_result.m_iterationsCount / runInput.m_result.m_gamesCount), iterationLimit) << "Check final iteration on test " << runInput.m_input.m_label << " failed!";
+			}
 			result = result + runInput.m_result;
+			resultWithoutRandomTests = resultWithoutRandomTests + runInput.m_resultWithoutRandomTests;
 		}
 
 		TestIO io;
 		if (intermediaryResults)
 			io.m_io.m_err << "------ " << std::endl;
 		io.m_io.m_err << "Tests: " << result << std::endl;
+		if (withRandomTests)
+			io.m_io.m_err << "Tests: " << resultWithoutRandomTests << " [non random]" << std::endl;
 		EXPECT_LE(result.m_elpased, firstStepTime.count() + (result.m_iterationsCount - 1) * stepTime.count());
 		EXPECT_LT((result.m_iterationsCount / result.m_gamesCount), iterationLimit);
 	}
@@ -136,7 +161,8 @@ struct SearchRaceTest : public ::testing::Test
 	{
 		std::vector<RunInput> runInputs;
 		for (auto const& input : inputs)
-			runInputs.emplace_back(*this, input);
+			if (m_specificTest.empty() || m_specificTest == input.m_label)
+				runInputs.emplace_back(*this, input);
 
 		std::atomic<unsigned> atomicIndex = 0u;
 		std::vector<std::thread> threads(m_maxThreadsCount <= 1 ? 0 : m_maxThreadsCount);
@@ -147,9 +173,9 @@ struct SearchRaceTest : public ::testing::Test
 				thread = std::thread(simulateGames, &runInputs, &atomicIndex);
 
 		if (threads.empty())
-			displayResults(&runInputs, intermediaryResults);
+			displayResults(&runInputs, intermediaryResults, !m_testParameters, m_config.m_withRandomTests);
 		else
-			threads.push_back(std::thread(displayResults, &runInputs, intermediaryResults));
+			threads.push_back(std::thread(displayResults, &runInputs, intermediaryResults, !m_testParameters, m_config.m_withRandomTests));
 		for (auto& thread : threads)
 			if (thread.joinable())
 				thread.join();
@@ -165,16 +191,23 @@ struct SearchRaceTest : public ::testing::Test
 			{
 				//for (m_config.m_targetStep = 2u; m_config.m_targetStep <= 4u; m_config.m_targetStep += 1)
 				{
-					for (m_config.m_speedFactor = 1.; m_config.m_speedFactor <= 6.; m_config.m_speedFactor += .1)
+					//for (m_config.m_directCommandVersion = 0; m_config.m_directCommandVersion <= 1; m_config.m_directCommandVersion += 1)
 					{
-						//for (int useDisksOfRotation = 1; useDisksOfRotation >= 0; m_config.m_useDisksOfRotation = !!--useDisksOfRotation)
+						for (m_config.m_speedFactor = 3.; m_config.m_speedFactor <= 4.; m_config.m_speedFactor += .1)
 						{
-							//for (m_config.m_targetDistance = 0.; m_config.m_targetDistance <= 10000.; m_config.m_targetDistance += 1000.)
+							//for (int useDisksOfRotation = 1; useDisksOfRotation >= 0; m_config.m_useDisksOfRotation = !!--useDisksOfRotation)
 							{
-								io.m_io.m_err << std::fixed << std::setprecision(2) << "testSequenceIterationsMax=" << m_config.m_testSequenceIterationsMax << " testSequencesSizeMax=" << m_config.m_testSequencesSizeMax << " targetStep=" << m_config.m_targetStep
-									<< " speedFactor=" << std::setprecision(2) << m_config.m_speedFactor << " useDisksOfRotation=" << m_config.m_useDisksOfRotation << " targetDistance=" << m_config.m_targetDistance << std::endl;
-								runGames(inputs, false);
-								io.m_io.m_err << "------ " << std::endl;
+								for (m_config.m_radiusFactor = 0.; m_config.m_radiusFactor <= 1.; m_config.m_radiusFactor += .1)
+								{
+									for (m_config.m_targetDistance = 1500; m_config.m_targetDistance <= 2500.; m_config.m_targetDistance += 100.)
+									{
+										io.m_io.m_err << std::fixed << std::setprecision(2) << " testSequenceIterationsMax=" << m_config.m_testSequenceIterationsMax << " testSequencesSizeMax=" << m_config.m_testSequencesSizeMax << " targetStep=" << m_config.m_targetStep
+											<< " directCommandVersion=" << m_config.m_directCommandVersion << " speedFactor=" << std::setprecision(2) << m_config.m_speedFactor
+											<< " useDisksOfRotation=" << m_config.m_useDisksOfRotation << " radiusFactor=" << m_config.m_radiusFactor << " targetDistance=" << m_config.m_targetDistance << std::endl;
+										runGames(inputs, false);
+										io.m_io.m_err << "------ " << std::endl;
+									}
+								}
 							}
 						}
 					}
