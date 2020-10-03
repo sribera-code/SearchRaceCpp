@@ -57,8 +57,8 @@ struct SearchRaceTest : public ::testing::Test
 		//m_config.m_withRandomTests = false;
 		//m_config.m_runLevel = RunLevel::Test;
 		//m_config.m_runLevel = RunLevel::Debug;
-		//m_testParameters = true;
-		//m_specificTest = "3";
+		m_testParameters = true;
+		//m_specificTest = "1";
 		//m_config.m_speedFactor = 0.;
 		//m_config.m_directCommandVersion = 0;
 
@@ -67,10 +67,14 @@ struct SearchRaceTest : public ::testing::Test
 
 		//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-		if (m_config.m_runLevel < RunLevel::Validation || !m_config.m_withRandomTests || !m_specificTest.empty())
+		if (m_config.m_runLevel < RunLevel::Validation || !m_config.m_withRandomTests)
 		{
 			m_maxThreadsCount = 1u;
 			m_runsCount = 1u;
+		}
+		if (!m_specificTest.empty())
+		{
+			m_maxThreadsCount = 1u;
 		}
 	}
 
@@ -193,13 +197,13 @@ struct SearchRaceTest : public ::testing::Test
 				{
 					//for (m_config.m_directCommandVersion = 0; m_config.m_directCommandVersion <= 1; m_config.m_directCommandVersion += 1)
 					{
-						for (m_config.m_speedFactor = 3.; m_config.m_speedFactor <= 4.; m_config.m_speedFactor += .1)
+						for (m_config.m_speedFactor = 3.3; m_config.m_speedFactor <= 3.8; m_config.m_speedFactor += .1)
 						{
 							//for (int useDisksOfRotation = 1; useDisksOfRotation >= 0; m_config.m_useDisksOfRotation = !!--useDisksOfRotation)
 							{
 								for (m_config.m_radiusFactor = 0.; m_config.m_radiusFactor <= 1.; m_config.m_radiusFactor += .1)
 								{
-									for (m_config.m_targetDistance = 1500; m_config.m_targetDistance <= 2500.; m_config.m_targetDistance += 100.)
+									for (m_config.m_targetDistance = 1800; m_config.m_targetDistance <= 2400.; m_config.m_targetDistance += 100.)
 									{
 										io.m_io.m_err << std::fixed << std::setprecision(2) << " testSequenceIterationsMax=" << m_config.m_testSequenceIterationsMax << " testSequencesSizeMax=" << m_config.m_testSequencesSizeMax << " targetStep=" << m_config.m_targetStep
 											<< " directCommandVersion=" << m_config.m_directCommandVersion << " speedFactor=" << std::setprecision(2) << m_config.m_speedFactor
